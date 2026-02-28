@@ -25,22 +25,34 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Conversation states
-ASKING_TIME      = "ASKING_TIME"
-ASKING_MESSAGE   = "ASKING_MESSAGE"
-ASKING_REPEAT    = "ASKING_REPEAT"
-AWAITING_CHECKIN = "AWAITING_CHECKIN"
+ASKING_TIME          = "ASKING_TIME"
+ASKING_MESSAGE       = "ASKING_MESSAGE"
+ASKING_REPEAT        = "ASKING_REPEAT"
+AWAITING_CHECKIN     = "AWAITING_CHECKIN"
+ASKING_MORNING_TIME  = "ASKING_MORNING_TIME"
+ASKING_EVENING_TIME  = "ASKING_EVENING_TIME"
+ASKING_COFFEE_DOSE   = "ASKING_COFFEE_DOSE"
+ASKING_NICOTINE_DOSE = "ASKING_NICOTINE_DOSE"
 
-# Cycle constants
-COFFEE_TARGET = 2
-COFFEE_FLAG   = 4
-NICOTINE_FLAG = 5
+# Default cycle settings (overridable per user)
+DEFAULT_MORNING_TIME    = "07:00"
+DEFAULT_EVENING_TIME    = "21:00"
+DEFAULT_COFFEE_TARGET   = 2
+DEFAULT_NICOTINE_TARGET = 3
 
-# Persistent reply keyboard shown at the bottom of the chat
+# Persistent reply keyboards
 MAIN_KEYBOARD = {
     "keyboard": [
         [{"text": "📊 Status"}, {"text": "📝 Log"}, {"text": "📈 History"}],
-        [{"text": "🔄 Cycle"},  {"text": "⏭ Skip"}, {"text": "🔁 Reset"}],
+        [{"text": "🔄 Cycle"},  {"text": "⏭ Skip"}, {"text": "🔁 Reset Cycle"}],
+        [{"text": "⏰ Set Time"}, {"text": "💊 Set Dose"}, {"text": "⏸ Pause"}],
     ],
+    "resize_keyboard": True,
+    "persistent": True,
+}
+
+PAUSE_KEYBOARD = {
+    "keyboard": [[{"text": "▶️ Resume"}]],
     "resize_keyboard": True,
     "persistent": True,
 }
@@ -76,9 +88,28 @@ def init_db():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS cycle_config (
                     chat_id          BIGINT PRIMARY KEY,
-                    cycle_start_date DATE NOT NULL
+                    cycle_start_date DATE NOT NULL,
+                    morning_time     TEXT,
+                    evening_time     TEXT,
+                    coffee_target    INTEGER,
+                    nicotine_target  INTEGER,
+                    paused           BOOLEAN DEFAULT FALSE
                 )
             """)
+            # Migrate existing deployments: add new columns if they don't exist yet
+            for col, typedef in [
+                ("morning_time",    "TEXT"),
+                ("evening_time",    "TEXT"),
+                ("coffee_target",   "INTEGER"),
+                ("nicotine_target", "INTEGER"),
+                ("paused",          "BOOLEAN DEFAULT FALSE"),
+            ]:
+                try:
+                    cur.execute(
+                        f"ALTER TABLE cycle_config ADD COLUMN IF NOT EXISTS {col} {typedef}"
+                    )
+                except Exception:
+                    pass
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS daily_log (
                     id             SERIAL PRIMARY KEY,
@@ -194,6 +225,47 @@ def set_cycle_start(chat_id: int, start_date: date) -> None:
             )
 
 
+def get_user_config(chat_id: int) -> dict:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """SELECT morning_time, evening_time, coffee_target, nicotine_target, paused
+                   FROM cycle_config WHERE chat_id = %s""",
+                (chat_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return {
+                    "morning_time":    DEFAULT_MORNING_TIME,
+                    "evening_time":    DEFAULT_EVENING_TIME,
+                    "coffee_target":   DEFAULT_COFFEE_TARGET,
+                    "nicotine_target": DEFAULT_NICOTINE_TARGET,
+                    "paused":          False,
+                }
+            return {
+                "morning_time":    row["morning_time"]    or DEFAULT_MORNING_TIME,
+                "evening_time":    row["evening_time"]    or DEFAULT_EVENING_TIME,
+                "coffee_target":   row["coffee_target"]   if row["coffee_target"]   is not None else DEFAULT_COFFEE_TARGET,
+                "nicotine_target": row["nicotine_target"] if row["nicotine_target"] is not None else DEFAULT_NICOTINE_TARGET,
+                "paused":          bool(row["paused"]),
+            }
+
+
+def update_user_config(chat_id: int, **kwargs) -> None:
+    allowed = {"morning_time", "evening_time", "coffee_target", "nicotine_target", "paused"}
+    kwargs = {k: v for k, v in kwargs.items() if k in allowed}
+    if not kwargs:
+        return
+    set_parts = ", ".join(f"{k} = %s" for k in kwargs)
+    values = list(kwargs.values()) + [chat_id]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE cycle_config SET {set_parts} WHERE chat_id = %s",
+                values,
+            )
+
+
 # --- Daily log ---
 
 def log_day(chat_id: int, log_date: date, phase: str, units, note: str = None) -> None:
@@ -302,20 +374,24 @@ def get_cycle_info(cycle_start: date, today: date) -> dict:
     }
 
 
-def format_morning_message(info: dict) -> str:
+def format_morning_message(info: dict, config: dict) -> str:
     day = info["cycle_day"]
     rem = info["days_remaining"]
     rem_str = f"{rem} day{'s' if rem != 1 else ''} remaining"
+    ev = config["evening_time"]
     if info["phase"] == "coffee":
+        ct = config["coffee_target"]
+        cups = f"{ct} cup{'s' if ct != 1 else ''}"
         return (
             f"☕ Day {day} — Coffee Phase ({rem_str})\n"
-            f"📌 Recommended today: 2 cups of coffee. No nicotine.\n"
-            f"Check-in tonight at 9 PM."
+            f"📌 Recommended today: {cups} of coffee. No nicotine.\n"
+            f"Check-in tonight at {ev}."
         )
+    nt = config["nicotine_target"]
     return (
         f"◽ Day {day} — Nicotine Phase ({rem_str})\n"
-        f"📌 Recommended today: 3–4 pieces of 2mg nicotine gum. No coffee.\n"
-        f"Check-in tonight at 9 PM."
+        f"📌 Recommended today: {nt}–{nt + 1} pieces of 2mg nicotine gum. No coffee.\n"
+        f"Check-in tonight at {ev}."
     )
 
 
@@ -334,8 +410,11 @@ def parse_checkin_reply(text: str) -> tuple:
     return None, None
 
 
-def check_tolerance(chat_id: int, phase: str) -> str | None:
-    threshold = COFFEE_FLAG if phase == "coffee" else NICOTINE_FLAG
+def check_tolerance(chat_id: int, phase: str, config: dict) -> str | None:
+    threshold = (
+        config["coffee_target"] + 1 if phase == "coffee"
+        else config["nicotine_target"] + 2
+    )
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -350,10 +429,14 @@ def check_tolerance(chat_id: int, phase: str) -> str | None:
     if len(rows) < 3 or not all(r[0] >= threshold for r in rows):
         return None
     substance = "cups" if phase == "coffee" else "pieces"
-    target = "2–3" if phase == "coffee" else "3–4"
+    if phase == "coffee":
+        target_str = str(config["coffee_target"])
+    else:
+        nt = config["nicotine_target"]
+        target_str = f"{nt}–{nt + 1}"
     return (
         f"⚠️ You've been at {threshold}+ {substance} for 3 days. "
-        f"Consider staying at {target} to preserve sensitivity."
+        f"Consider staying at {target_str} to preserve sensitivity."
     )
 
 
@@ -440,7 +523,6 @@ def handle_log_command(chat_id: int, args: str) -> None:
     if not cycle_start:
         send_message(chat_id, "No cycle started. Use /start first.", reply_markup=MAIN_KEYBOARD)
         return
-    # No args — enter check-in state and ask
     if not args:
         today = datetime.now(TZ).date()
         info = get_cycle_info(cycle_start, today)
@@ -457,7 +539,8 @@ def handle_log_command(chat_id: int, args: str) -> None:
     log_day(chat_id, today, info["phase"], units, note)
     substance = "cups" if info["phase"] == "coffee" else "pieces"
     send_message(chat_id, f"✅ Logged: {units} {substance} today.", reply_markup=MAIN_KEYBOARD)
-    warning = check_tolerance(chat_id, info["phase"])
+    config = get_user_config(chat_id)
+    warning = check_tolerance(chat_id, info["phase"], config)
     if warning:
         send_message(chat_id, warning)
 
@@ -468,7 +551,11 @@ def handle_history(chat_id: int) -> None:
         send_message(chat_id, "No history yet.", reply_markup=MAIN_KEYBOARD)
         return
 
-    lines = ["📊 Last 14 days:\n"]
+    config = get_user_config(chat_id)
+    ct = config["coffee_target"]
+    nt = config["nicotine_target"]
+
+    lines = [f"📊 Last 14 days (targets: ☕ {ct} cups / ◽ {nt}–{nt + 1} pieces):\n"]
     for log_date, phase, units, note in rows:
         emoji = "☕" if phase == "coffee" else "◽"
         units_str = str(units) if units is not None else "—"
@@ -479,7 +566,10 @@ def handle_history(chat_id: int) -> None:
     nic_units    = [r[2] for r in rows if r[1] == "nicotine" and r[2] is not None]
 
     stats = []
-    for label, emoji, data in [("coffee", "☕", coffee_units), ("nicotine", "◽", nic_units)]:
+    for label, emoji, data, target in [
+        ("coffee",   "☕", coffee_units, ct),
+        ("nicotine", "◽", nic_units,    nt),
+    ]:
         if not data:
             continue
         avg = sum(data) / len(data)
@@ -487,12 +577,12 @@ def handle_history(chat_id: int) -> None:
         if len(data) >= 6 and sum(data[:3]) / 3 > sum(data[3:6]) / 3 + 0.5:
             trend = " ↑ trending up"
         unit = "cups" if label == "coffee" else "pieces"
-        stats.append(f"{emoji} Avg {label}: {avg:.1f} {unit}{trend}")
+        stats.append(f"{emoji} Avg {label}: {avg:.1f} {unit} (target: {target}){trend}")
 
     all_logged = [(r[1], r[2]) for r in rows if r[2] is not None]
     streak = best = 0
     for phase, units in reversed(all_logged):
-        target = COFFEE_TARGET if phase == "coffee" else 4
+        target = ct if phase == "coffee" else nt
         if units <= target:
             streak += 1
             best = max(best, streak)
@@ -511,11 +601,17 @@ def handle_cycle(chat_id: int) -> None:
     if not cycle_start:
         send_message(chat_id, "No cycle started. Use /start first.", reply_markup=MAIN_KEYBOARD)
         return
+    config = get_user_config(chat_id)
+    ct = config["coffee_target"]
+    nt = config["nicotine_target"]
     today = datetime.now(TZ).date()
     current_day = get_cycle_info(cycle_start, today)["cycle_day"]
     lines = ["📅 7-day cycle:\n"]
     for d in range(1, 8):
-        label = "☕ Coffee (target: 2 cups)" if d <= 4 else "◽ Nicotine (target: 3–4 pieces)"
+        if d <= 4:
+            label = f"☕ Coffee (target: {ct} cup{'s' if ct != 1 else ''})"
+        else:
+            label = f"◽ Nicotine (target: {nt}–{nt + 1} pieces)"
         marker = " ← today" if d == current_day else ""
         lines.append(f"Day {d}: {label}{marker}")
     send_message(chat_id, "\n".join(lines), reply_markup=MAIN_KEYBOARD)
@@ -546,12 +642,67 @@ def handle_reset(chat_id: int) -> None:
     today = datetime.now(TZ).date()
     info = get_cycle_info(cycle_start, today)
     if info["phase"] == "coffee":
-        new_start = today                    # today = day 1 of coffee
+        new_start = today
     else:
-        new_start = today - timedelta(days=4)  # today = day 5 = day 1 of nicotine
+        new_start = today - timedelta(days=4)
     set_cycle_start(chat_id, new_start)
     phase_name = "Coffee Phase" if info["phase"] == "coffee" else "Nicotine Phase"
     send_message(chat_id, f"🔁 Reset to Day 1 of {phase_name}.\n\n{format_status(chat_id)}", reply_markup=MAIN_KEYBOARD)
+
+
+def handle_set_time(chat_id: int) -> None:
+    if not get_cycle_start(chat_id):
+        send_message(chat_id, "No cycle started. Use /start first.", reply_markup=MAIN_KEYBOARD)
+        return
+    config = get_user_config(chat_id)
+    set_conv(chat_id, state=ASKING_MORNING_TIME)
+    send_message(
+        chat_id,
+        f"⏰ Set notification times.\n\n"
+        f"Current morning time: {config['morning_time']}\n"
+        f"Current evening time: {config['evening_time']}\n\n"
+        f"What time should the morning message be sent? (HH:MM, 24h format)",
+    )
+
+
+def handle_set_dose(chat_id: int) -> None:
+    if not get_cycle_start(chat_id):
+        send_message(chat_id, "No cycle started. Use /start first.", reply_markup=MAIN_KEYBOARD)
+        return
+    config = get_user_config(chat_id)
+    set_conv(chat_id, state=ASKING_COFFEE_DOSE)
+    send_message(
+        chat_id,
+        f"💊 Set daily dose targets.\n\n"
+        f"Current coffee target: {config['coffee_target']} cups "
+        f"(warning fires at {config['coffee_target'] + 1}+)\n"
+        f"Current nicotine target: {config['nicotine_target']} pieces "
+        f"(warning fires at {config['nicotine_target'] + 2}+)\n\n"
+        f"What is your daily coffee target? (number of cups, e.g. 2)",
+    )
+
+
+def handle_pause(chat_id: int) -> None:
+    if not get_cycle_start(chat_id):
+        send_message(chat_id, "No cycle started. Use /start first.", reply_markup=MAIN_KEYBOARD)
+        return
+    update_user_config(chat_id, paused=True)
+    set_conv(chat_id)
+    send_message(
+        chat_id,
+        "⏸ Bot paused. No notifications will be sent until you resume.",
+        reply_markup=PAUSE_KEYBOARD,
+    )
+
+
+def handle_resume(chat_id: int) -> None:
+    update_user_config(chat_id, paused=False)
+    set_conv(chat_id)
+    send_message(
+        chat_id,
+        "▶️ Welcome back! Resuming your cycle.\n\n" + format_status(chat_id),
+        reply_markup=MAIN_KEYBOARD,
+    )
 
 
 # --- Generic reminder handlers ---
@@ -564,7 +715,7 @@ def handle_add(chat_id: int) -> None:
 def handle_list(chat_id: int) -> None:
     rows = get_reminders(chat_id)
     if not rows:
-        send_message(chat_id, "You have no reminders. Tap ➕ Add reminder to create one.", reply_markup=MAIN_KEYBOARD)
+        send_message(chat_id, "You have no reminders.", reply_markup=MAIN_KEYBOARD)
         return
     lines = ["📋 Your reminders:\n"]
     for rid, t, msg, days in rows:
@@ -631,9 +782,77 @@ def handle_text(chat_id: int, text: str) -> None:
         set_conv(chat_id)
         substance = "cups" if info["phase"] == "coffee" else "pieces"
         send_message(chat_id, f"✅ Logged: {units} {substance} today. Good work!", reply_markup=MAIN_KEYBOARD)
-        warning = check_tolerance(chat_id, info["phase"])
+        config = get_user_config(chat_id)
+        warning = check_tolerance(chat_id, info["phase"], config)
         if warning:
             send_message(chat_id, warning)
+
+    elif state == ASKING_MORNING_TIME:
+        try:
+            parts = text.strip().split(":")
+            h, m = int(parts[0]), int(parts[1])
+            assert 0 <= h < 24 and 0 <= m < 60
+        except Exception:
+            send_message(chat_id, "Please use HH:MM format, e.g. 07:00")
+            return
+        time_str = f"{h:02d}:{m:02d}"
+        set_conv(chat_id, state=ASKING_EVENING_TIME, temp_time=time_str)
+        send_message(
+            chat_id,
+            f"Got it! Morning set to {time_str}.\n\n"
+            f"What time should the evening check-in be sent? (HH:MM, 24h format)",
+        )
+
+    elif state == ASKING_EVENING_TIME:
+        try:
+            parts = text.strip().split(":")
+            h, m = int(parts[0]), int(parts[1])
+            assert 0 <= h < 24 and 0 <= m < 60
+        except Exception:
+            send_message(chat_id, "Please use HH:MM format, e.g. 21:00")
+            return
+        time_str = f"{h:02d}:{m:02d}"
+        morning_time = conv["temp_time"]
+        update_user_config(chat_id, morning_time=morning_time, evening_time=time_str)
+        set_conv(chat_id)
+        send_message(
+            chat_id,
+            f"✅ Notification times updated!\n\nMorning: {morning_time}\nEvening: {time_str}",
+            reply_markup=MAIN_KEYBOARD,
+        )
+
+    elif state == ASKING_COFFEE_DOSE:
+        try:
+            units = int(text.strip())
+            assert 1 <= units <= 10
+        except Exception:
+            send_message(chat_id, "Please enter a number between 1 and 10.")
+            return
+        set_conv(chat_id, state=ASKING_NICOTINE_DOSE, temp_time=str(units))
+        send_message(
+            chat_id,
+            f"Got it! Coffee target: {units} cup{'s' if units != 1 else ''} "
+            f"(warning at {units + 1}+).\n\n"
+            f"What is your daily nicotine target? (number of pieces of gum, e.g. 3)",
+        )
+
+    elif state == ASKING_NICOTINE_DOSE:
+        try:
+            units = int(text.strip())
+            assert 1 <= units <= 20
+        except Exception:
+            send_message(chat_id, "Please enter a number between 1 and 20.")
+            return
+        coffee_target = int(conv["temp_time"])
+        update_user_config(chat_id, coffee_target=coffee_target, nicotine_target=units)
+        set_conv(chat_id)
+        send_message(
+            chat_id,
+            f"✅ Dose targets updated!\n\n"
+            f"☕ Coffee: {coffee_target} cups (warning at {coffee_target + 1}+)\n"
+            f"◽ Nicotine: {units} pieces (warning at {units + 2}+)",
+            reply_markup=MAIN_KEYBOARD,
+        )
 
     else:
         send_message(chat_id, "Tap a button below or use /status to see your current day.", reply_markup=MAIN_KEYBOARD)
@@ -681,14 +900,26 @@ def webhook():
         send_message(chat_id, "This is a private bot.")
         return jsonify({"ok": True})
 
+    # Check pause state first — only Resume gets through
+    config = get_user_config(chat_id)
+    if config["paused"]:
+        if text == "▶️ Resume":
+            handle_resume(chat_id)
+        else:
+            send_message(chat_id, "⏸ Bot is paused. Press ▶️ Resume to continue.", reply_markup=PAUSE_KEYBOARD)
+        return jsonify({"ok": True})
+
     # Reply keyboard button map
     button_map = {
-        "📊 Status":       lambda: handle_status(chat_id),
-        "📝 Log":          lambda: handle_log_command(chat_id, ""),
-        "📈 History":      lambda: handle_history(chat_id),
-        "🔄 Cycle":        lambda: handle_cycle(chat_id),
-        "⏭ Skip":         lambda: handle_skip(chat_id),
-        "🔁 Reset":        lambda: handle_reset(chat_id),
+        "📊 Status":      lambda: handle_status(chat_id),
+        "📝 Log":         lambda: handle_log_command(chat_id, ""),
+        "📈 History":     lambda: handle_history(chat_id),
+        "🔄 Cycle":       lambda: handle_cycle(chat_id),
+        "⏭ Skip":        lambda: handle_skip(chat_id),
+        "🔁 Reset Cycle": lambda: handle_reset(chat_id),
+        "⏰ Set Time":    lambda: handle_set_time(chat_id),
+        "💊 Set Dose":    lambda: handle_set_dose(chat_id),
+        "⏸ Pause":       lambda: handle_pause(chat_id),
     }
 
     if text in button_map:
@@ -735,39 +966,46 @@ def cron():
 
     if AUTHORIZED_USER:
         cycle_start = get_cycle_start(AUTHORIZED_USER)
+        cfg = get_user_config(AUTHORIZED_USER)
 
-        # 07:00 — morning message
-        if cycle_start and current_time == "07:00":
-            info = get_cycle_info(cycle_start, today)
-            send_message(AUTHORIZED_USER, format_morning_message(info))
-            sent += 1
+        if not cfg["paused"]:
+            morning_time = cfg["morning_time"]
+            evening_time = cfg["evening_time"]
+            ev_h, ev_m = map(int, evening_time.split(":"))
+            nudge_time = f"{(ev_h + 1) % 24:02d}:{ev_m:02d}"
 
-        # 21:00 — evening check-in (only if not already logged)
-        if cycle_start and current_time == "21:00":
-            today_log = get_today_log(AUTHORIZED_USER, today)
-            if not today_log or today_log["consumed_units"] is None:
+            # Morning message
+            if cycle_start and current_time == morning_time:
                 info = get_cycle_info(cycle_start, today)
-                send_message(AUTHORIZED_USER, format_checkin_prompt(info))
-                set_conv(AUTHORIZED_USER, state=AWAITING_CHECKIN)
+                send_message(AUTHORIZED_USER, format_morning_message(info, cfg))
                 sent += 1
 
-        # 22:00 — nudge if still not logged
-        if cycle_start and current_time == "22:00":
-            today_log = get_today_log(AUTHORIZED_USER, today)
-            if not today_log or today_log["consumed_units"] is None:
-                info = get_cycle_info(cycle_start, today)
-                substance = "cups" if info["phase"] == "coffee" else "pieces"
-                send_message(AUTHORIZED_USER, f"🔔 Still waiting for your check-in — how many {substance} today?")
-                set_conv(AUTHORIZED_USER, state=AWAITING_CHECKIN)
-                sent += 1
+            # Evening check-in (only if not already logged)
+            if cycle_start and current_time == evening_time:
+                today_log = get_today_log(AUTHORIZED_USER, today)
+                if not today_log or today_log["consumed_units"] is None:
+                    info = get_cycle_info(cycle_start, today)
+                    send_message(AUTHORIZED_USER, format_checkin_prompt(info))
+                    set_conv(AUTHORIZED_USER, state=AWAITING_CHECKIN)
+                    sent += 1
 
-        # 23:55 — auto log no-data if still nothing
-        if cycle_start and current_time == "23:55":
-            today_log = get_today_log(AUTHORIZED_USER, today)
-            if not today_log or today_log["consumed_units"] is None:
-                info = get_cycle_info(cycle_start, today)
-                log_day(AUTHORIZED_USER, today, info["phase"], None, "auto: no data")
-                set_conv(AUTHORIZED_USER)
+            # Nudge 1 hour after evening check-in if still not logged
+            if cycle_start and current_time == nudge_time:
+                today_log = get_today_log(AUTHORIZED_USER, today)
+                if not today_log or today_log["consumed_units"] is None:
+                    info = get_cycle_info(cycle_start, today)
+                    substance = "cups" if info["phase"] == "coffee" else "pieces"
+                    send_message(AUTHORIZED_USER, f"🔔 Still waiting for your check-in — how many {substance} today?")
+                    set_conv(AUTHORIZED_USER, state=AWAITING_CHECKIN)
+                    sent += 1
+
+            # 23:55 — auto log no-data if still nothing
+            if cycle_start and current_time == "23:55":
+                today_log = get_today_log(AUTHORIZED_USER, today)
+                if not today_log or today_log["consumed_units"] is None:
+                    info = get_cycle_info(cycle_start, today)
+                    log_day(AUTHORIZED_USER, today, info["phase"], None, "auto: no data")
+                    set_conv(AUTHORIZED_USER)
 
     logger.info("Cron at %s — sent %d", current_time, sent)
     return jsonify({"ok": True, "time": current_time, "sent": sent})

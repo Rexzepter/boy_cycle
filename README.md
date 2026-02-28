@@ -8,8 +8,8 @@ A personal Telegram bot for managing a 7-day caffeine/nicotine sensitivity cycle
 
 The bot runs a perpetual 7-day cycle:
 
-| Days | Phase | Target |
-|------|-------|--------|
+| Days | Phase | Default Target |
+|------|-------|----------------|
 | 1–4 | ☕ Coffee | 2 cups/day, no nicotine |
 | 5–7 | ◽ Nicotine | 3–4 pieces of 2mg gum, no coffee |
 | Day 8 | → resets to Day 1 | |
@@ -17,8 +17,10 @@ The bot runs a perpetual 7-day cycle:
 **Automated daily messages:**
 - **7:00 AM** — morning briefing with phase, day, and recommended consumption
 - **9:00 PM** — check-in prompt asking how many cups/pieces today
-- **10:00 PM** — nudge if no reply
+- **10:00 PM** — nudge if no reply (1 hour after evening check-in)
 - **11:55 PM** — auto-logs "no data" if still no reply
+
+Morning and evening times are configurable per user (see ⏰ Set Time below).
 
 **Commands / keyboard buttons:**
 | Button | Function |
@@ -26,11 +28,36 @@ The bot runs a perpetual 7-day cycle:
 | 📊 Status | Current phase, day, days remaining, today's log |
 | 📝 Log | Log today's consumption (prompts for number) |
 | 📈 History | Last 14 days of logs + averages, trend, streak |
-| 🔄 Cycle | Full 7-day schedule with today marked |
+| 🔄 Cycle | Full 7-day schedule with today marked and current targets |
 | ⏭ Skip | Jump to the next phase immediately |
-| 🔁 Reset | Reset to Day 1 of the current phase |
+| 🔁 Reset Cycle | Reset to Day 1 of the current phase |
+| ⏰ Set Time | Set the morning and evening notification times |
+| 💊 Set Dose | Set daily dose targets for coffee and nicotine |
+| ⏸ Pause | Pause all notifications; keyboard shows only ▶️ Resume |
 
-**Tolerance warnings** — fires after logging if you've been at 4+ cups (coffee) or 5+ pieces (nicotine) for 3 consecutive days.
+**Tolerance warnings** — fires after logging if you've exceeded the warning threshold for 3 consecutive days.
+
+Default warning thresholds (auto-update when dose target changes):
+- Coffee: target + 1 cup (default: 3+ cups)
+- Nicotine: target + 2 pieces (default: 5+ pieces)
+
+**⏰ Set Time flow:**
+1. Press ⏰ Set Time
+2. Enter morning time in HH:MM format (e.g. `07:00`)
+3. Enter evening check-in time in HH:MM format (e.g. `21:00`)
+4. Confirmation message; new times take effect from the next cron cycle
+
+**💊 Set Dose flow:**
+1. Press 💊 Set Dose
+2. Enter coffee target (number of cups, 1–10)
+3. Enter nicotine target (number of pieces, 1–20)
+4. Confirmation shows the new targets and their warning thresholds
+5. History and Cycle views update immediately to reflect the new targets
+
+**⏸ Pause / ▶️ Resume:**
+- Pressing ⏸ Pause stops all automated notifications. The keyboard collapses to a single large ▶️ Resume button.
+- While paused, any message other than ▶️ Resume shows a reminder that the bot is paused.
+- Pressing ▶️ Resume sends a welcome message, restores the full keyboard, and continues the cycle from the day it was paused on (the cycle date does not change during pause).
 
 ---
 
@@ -57,7 +84,7 @@ cron-job.org ──► GET /cron (every minute) ──► check time, fire messa
 
 | Table | Purpose |
 |-------|---------|
-| `cycle_config` | Stores `cycle_start_date` per user |
+| `cycle_config` | Stores `cycle_start_date`, notification times, dose targets, and pause state per user |
 | `daily_log` | Date, phase, consumed units, notes |
 | `conversations` | Tracks multi-step conversation state |
 | `reminders` | Generic timed reminders (infrastructure, unused in UI) |
