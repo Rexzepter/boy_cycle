@@ -87,7 +87,7 @@ DEFAULT_NICOTINE_TARGET = 3
 MAIN_KEYBOARD = {
     "keyboard": [
         [{"text": "📊 Status"}, {"text": "📝 Log"}, {"text": "📈 History"}],
-        [{"text": "🔄 Cycle"},  {"text": "⏭ Skip Phase"}, {"text": "🔁 Reset Phase"}],
+        [{"text": "🔄 Show Cycle"}, {"text": "⏭ Skip Phase"}, {"text": "🔁 Reset Phase"}],
         [{"text": "⏰ Set Time"}, {"text": "💊 Set Dose"}, {"text": "⏸ Pause"}],
     ],
     "resize_keyboard": True,
@@ -409,12 +409,20 @@ def generate_history_chart(chat_id: int, config: dict) -> BytesIO | None:
     ax.axhline(y=ct,        color='#7B3F00', linestyle='--', alpha=0.35, linewidth=1)
     ax.axhline(y=nt + 0.5,  color='#2E8B57', linestyle='--', alpha=0.35, linewidth=1)
 
+    # X-axis: always show at least 30 days; grow as data spans more
+    x_start = dt_range[0]
+    x_end   = max(dt_range[-1], dt_range[0] + timedelta(days=30))
+    ax.set_xlim(x_start, x_end)
+
+    # Y-axis: always start at 0 so data anchors to the bottom-left
+    ax.set_ylim(bottom=0)
+
     ax.xaxis.set_major_locator(mdates.AutoDateLocator())
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
     fig.autofmt_xdate()
     ax.set_ylabel('Units consumed')
     ax.set_title('Consumption history')
-    ax.legend()
+    ax.legend(loc='upper right')
     ax.grid(True, alpha=0.25)
     fig.tight_layout()
 
@@ -1058,7 +1066,7 @@ def webhook():
         "📊 Status":      lambda: handle_status(chat_id),
         "📝 Log":         lambda: handle_log_command(chat_id, ""),
         "📈 History":     lambda: handle_history(chat_id),
-        "🔄 Cycle":       lambda: handle_cycle(chat_id),
+        "🔄 Show Cycle":  lambda: handle_cycle(chat_id),
         "⏭ Skip Phase":  lambda: handle_skip(chat_id),
         "🔁 Reset Phase": lambda: handle_reset(chat_id),
         "⏰ Set Time":    lambda: handle_set_time(chat_id),
