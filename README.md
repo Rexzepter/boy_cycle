@@ -27,7 +27,7 @@ Morning and evening times are configurable per user (see ⏰ Set Time below).
 |--------|----------|
 | 📊 Status | Current phase, day, days remaining, today's log |
 | 📝 Log | Log today's consumption (prompts for number) |
-| 📈 History | Last 14 days of logs + averages, trend, streak |
+| 📈 History | Last 14 days of logs + averages, trend, streak; sends a chart image of full consumption history |
 | 🔄 Cycle | Full 7-day schedule with today marked and current targets |
 | ⏭ Skip | Jump to the next phase immediately |
 | 🔁 Reset Cycle | Reset to Day 1 of the current phase |
@@ -74,6 +74,7 @@ cron-job.org ──► GET /cron (every minute) ──► check time, fire messa
 **Stack:**
 - Python 3.11 + Flask — webhook handler and cron endpoint
 - psycopg2 — PostgreSQL client
+- matplotlib — generates consumption history chart images sent via Telegram
 - Supabase — free hosted PostgreSQL database
 - Render — free web service hosting (kept alive by cron pings)
 - cron-job.org — free external cron, hits `/cron` every minute

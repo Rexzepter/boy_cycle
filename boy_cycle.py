@@ -5,6 +5,12 @@ import re
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from io import BytesIO
+
 import requests
 import psycopg2
 import psycopg2.extras
@@ -313,6 +319,71 @@ def get_recent_logs(chat_id: int, limit: int = 14) -> list:
             return cur.fetchall()
 
 
+def get_all_logs(chat_id: int) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT date, phase, consumed_units
+                FROM daily_log WHERE chat_id = %s AND consumed_units IS NOT NULL
+                ORDER BY date ASC
+                """,
+                (chat_id,),
+            )
+            return cur.fetchall()
+
+
+def generate_history_chart(chat_id: int, config: dict) -> BytesIO | None:
+    rows = get_all_logs(chat_id)
+    if not rows:
+        return None
+
+    coffee_dict = {}
+    nicotine_dict = {}
+    for log_date, phase, units in rows:
+        if phase == "coffee":
+            coffee_dict[log_date] = units
+        else:
+            nicotine_dict[log_date] = units
+
+    min_date = rows[0][0]
+    max_date = rows[-1][0]
+    date_range = [min_date + timedelta(days=i) for i in range((max_date - min_date).days + 1)]
+    # Convert to datetime so matplotlib date formatters work reliably
+    dt_range = [datetime(d.year, d.month, d.day) for d in date_range]
+
+    coffee_vals  = [coffee_dict.get(d,   float('nan')) for d in date_range]
+    nicotine_vals = [nicotine_dict.get(d, float('nan')) for d in date_range]
+
+    ct = config["coffee_target"]
+    nt = config["nicotine_target"]
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    ax.plot(dt_range, coffee_vals,   color='#7B3F00', linewidth=1.5,
+            marker='o', markersize=3, label=f'☕ Coffee (target: {ct})')
+    ax.plot(dt_range, nicotine_vals, color='#2E8B57', linewidth=1.5,
+            marker='o', markersize=3, label=f'◽ Nicotine (target: {nt})')
+
+    ax.axhline(y=ct, color='#7B3F00', linestyle='--', alpha=0.35, linewidth=1)
+    ax.axhline(y=nt, color='#2E8B57', linestyle='--', alpha=0.35, linewidth=1)
+
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+    fig.autofmt_xdate()
+    ax.set_ylabel('Units consumed')
+    ax.set_title('Consumption history')
+    ax.legend()
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+
+    buf = BytesIO()
+    fig.savefig(buf, format='png', dpi=110)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
 # ---------------------------------------------------------------------------
 # Days parsing (generic reminders)
 # ---------------------------------------------------------------------------
@@ -475,6 +546,18 @@ def send_message(chat_id: int, text: str, reply_markup=None) -> None:
     requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=10)
 
 
+def send_photo(chat_id: int, buf: BytesIO, reply_markup=None) -> None:
+    data = {"chat_id": chat_id}
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
+    requests.post(
+        f"{TELEGRAM_API}/sendPhoto",
+        data=data,
+        files={"photo": ("chart.png", buf, "image/png")},
+        timeout=30,
+    )
+
+
 def edit_message(chat_id: int, message_id: int, text: str) -> None:
     requests.post(
         f"{TELEGRAM_API}/editMessageText",
@@ -594,6 +677,10 @@ def handle_history(chat_id: int) -> None:
     if stats:
         lines.append("\n" + "\n".join(stats))
     send_message(chat_id, "\n".join(lines), reply_markup=MAIN_KEYBOARD)
+
+    chart = generate_history_chart(chat_id, config)
+    if chart:
+        send_photo(chat_id, chart)
 
 
 def handle_cycle(chat_id: int) -> None:
