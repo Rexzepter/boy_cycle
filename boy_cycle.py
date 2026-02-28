@@ -685,7 +685,12 @@ def handle_history(chat_id: int) -> None:
     for log_date, phase, units, note in rows:
         emoji = "☕" if phase == "coffee" else "◽"
         unit_label = "cups" if phase == "coffee" else "pieces"
-        units_str = f"{units} {unit_label}" if units is not None else "—"
+        if units is not None:
+            limit = ct if phase == "coffee" else nt + 1
+            status = "✓" if units <= limit else "⚠️"
+            units_str = f"{units} {unit_label} {status}"
+        else:
+            units_str = "—"
         note_str = f"  ({note})" if note else ""
         lines.append(f"{emoji} {log_date}  {units_str}{note_str}")
 
