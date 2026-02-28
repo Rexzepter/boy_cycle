@@ -120,6 +120,36 @@ For local testing use polling or expose via [ngrok](https://ngrok.com) to receiv
 
 ---
 
+### SIMPLY
+This is actually a pretty elegant little system. Let me walk you through what's happening and why each piece exists.
+
+**The goal:** You want a bot that messages you automatically every day on Telegram. The challenge is that *something* needs to be running 24/7 to send those messages — your laptop can't do that, so you need the internet to do it for you, for free.
+
+---
+
+**The services, in order of why they exist:**
+
+**Telegram + BotFather** — Telegram lets anyone create a bot account. BotFather is Telegram's official bot that creates other bots. You talk to it, it gives you a secret token (like a password) that proves you own your bot.
+
+**Supabase** — This is your bot's memory. Every time you log "2 cups today," that needs to be saved somewhere permanent. Supabase gives you a free online database (think of it as a spreadsheet in the cloud that your bot can read and write to).
+
+**Render** — This is where your bot's brain actually lives and runs. It's a free server in the cloud that runs your Python code. The problem with Render's free tier is that it "falls asleep" if no one pokes it for a while — which would mean your bot misses its scheduled messages.
+
+**cron-job.org** — This exists *specifically* to solve the Render sleep problem. It's a free service that pings your bot every single minute, which keeps Render awake. As a bonus, each ping also triggers your bot to check "is it 7am? Is it 9pm? Should I send a message right now?"
+
+---
+
+**The flow in plain English:**
+
+1. You set up the bot identity on Telegram
+2. You set up a database to remember things
+3. You put your code on Render so it runs in the cloud
+4. You tell Telegram where to find your bot (the "register webhook" step — basically giving Telegram Render's address)
+5. You set up cron-job.org to poke Render every minute, keeping it alive and triggering timed messages
+
+Each service is free, which is why there are five of them instead of one paid service that does everything.
+
+
 ## Files
 
 ```
