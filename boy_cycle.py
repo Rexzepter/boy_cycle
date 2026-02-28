@@ -87,7 +87,7 @@ DEFAULT_NICOTINE_TARGET = 3
 MAIN_KEYBOARD = {
     "keyboard": [
         [{"text": "📊 Status"}, {"text": "📝 Log"}, {"text": "📈 History"}],
-        [{"text": "🔄 Cycle"},  {"text": "⏭ Skip"}, {"text": "🔁 Reset Cycle"}],
+        [{"text": "🔄 Cycle"},  {"text": "⏭ Skip Phase"}, {"text": "🔁 Reset Cycle"}],
         [{"text": "⏰ Set Time"}, {"text": "💊 Set Dose"}, {"text": "⏸ Pause"}],
     ],
     "resize_keyboard": True,
@@ -399,15 +399,15 @@ def generate_history_chart(chat_id: int, config: dict) -> BytesIO | None:
     ct = config["coffee_target"]
     nt = config["nicotine_target"]
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(5, 4))
 
-    ax.plot(dt_range, coffee_vals,   color='#7B3F00', linewidth=1.5,
-            marker='o', markersize=3, label=f'☕ Coffee (target: {ct})')
-    ax.plot(dt_range, nicotine_vals, color='#2E8B57', linewidth=1.5,
-            marker='o', markersize=3, label=f'◽ Nicotine (target: {nt})')
+    ax.plot(dt_range, coffee_vals,   color='#7B3F00', linewidth=2.5,
+            marker='o', markersize=4, label=f'☕ Coffee (target: {ct})')
+    ax.plot(dt_range, nicotine_vals, color='#2E8B57', linewidth=2.5,
+            marker='o', markersize=4, label=f'◽ Nicotine (target: {nt})')
 
-    ax.axhline(y=ct, color='#7B3F00', linestyle='--', alpha=0.35, linewidth=1)
-    ax.axhline(y=nt, color='#2E8B57', linestyle='--', alpha=0.35, linewidth=1)
+    ax.axhline(y=ct,        color='#7B3F00', linestyle='--', alpha=0.35, linewidth=1)
+    ax.axhline(y=nt + 0.5,  color='#2E8B57', linestyle='--', alpha=0.35, linewidth=1)
 
     ax.xaxis.set_major_locator(mdates.AutoDateLocator())
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
@@ -514,10 +514,7 @@ def format_morning_message(info: dict, config: dict) -> str:
 
 def format_checkin_prompt(info: dict) -> str:
     substance = "cups" if info["phase"] == "coffee" else "pieces"
-    return (
-        f"📋 Daily check-in — how did today go?\n"
-        f"Reply with the number of {substance} you had, or add a note (e.g. '2 felt good')."
-    )
+    return f"📋 How many {substance} today? How did you feel?"
 
 
 def parse_checkin_reply(text: str) -> tuple:
@@ -657,7 +654,7 @@ def handle_log_command(chat_id: int, args: str) -> None:
         info = get_cycle_info(cycle_start, today)
         substance = "cups" if info["phase"] == "coffee" else "pieces"
         set_conv(chat_id, state=AWAITING_CHECKIN)
-        send_message(chat_id, f"How many {substance} today? (e.g. '2' or '2 felt good')")
+        send_message(chat_id, f"How many {substance} today? How did you feel?")
         return
     units, note = parse_checkin_reply(args)
     if units is None:
@@ -684,10 +681,11 @@ def handle_history(chat_id: int) -> None:
     ct = config["coffee_target"]
     nt = config["nicotine_target"]
 
-    lines = [f"📊 Last 14 days (targets: ☕ {ct} cups / ◽ {nt}–{nt + 1} pieces):\n"]
+    lines = ["📊 Last 14 days:\n"]
     for log_date, phase, units, note in rows:
         emoji = "☕" if phase == "coffee" else "◽"
-        units_str = str(units) if units is not None else "—"
+        unit_label = "cups" if phase == "coffee" else "pieces"
+        units_str = f"{units} {unit_label}" if units is not None else "—"
         note_str = f"  ({note})" if note else ""
         lines.append(f"{emoji} {log_date}  {units_str}{note_str}")
 
@@ -764,6 +762,14 @@ def handle_skip(chat_id: int) -> None:
         new_start = today
         jumped_to = "Coffee Phase (new cycle)"
     set_cycle_start(chat_id, new_start)
+    # Clear today's log — it belonged to the old phase
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM daily_log WHERE chat_id = %s AND date = %s",
+                (chat_id, today),
+            )
+    set_conv(chat_id)
     send_message(chat_id, f"⏭ Skipped to {jumped_to}.\n\n{format_status(chat_id)}", reply_markup=MAIN_KEYBOARD)
 
 
@@ -1048,7 +1054,7 @@ def webhook():
         "📝 Log":         lambda: handle_log_command(chat_id, ""),
         "📈 History":     lambda: handle_history(chat_id),
         "🔄 Cycle":       lambda: handle_cycle(chat_id),
-        "⏭ Skip":        lambda: handle_skip(chat_id),
+        "⏭ Skip Phase":  lambda: handle_skip(chat_id),
         "🔁 Reset Cycle": lambda: handle_reset(chat_id),
         "⏰ Set Time":    lambda: handle_set_time(chat_id),
         "💊 Set Dose":    lambda: handle_set_dose(chat_id),
