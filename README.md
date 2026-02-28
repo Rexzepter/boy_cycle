@@ -121,8 +121,6 @@ For local testing use polling or expose via [ngrok](https://ngrok.com) to receiv
 ---
 
 ### SIMPLY
-This is actually a pretty elegant little system. Let me walk you through what's happening and why each piece exists.
-
 **The goal:** You want a bot that messages you automatically every day on Telegram. The challenge is that *something* needs to be running 24/7 to send those messages — your laptop can't do that, so you need the internet to do it for you, for free.
 
 ---
