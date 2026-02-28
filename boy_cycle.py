@@ -5,11 +5,34 @@ import re
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from io import BytesIO
+# matplotlib is only used for history charts and may not be present in
+# minimal deployments. Import it in a try/except so the rest of the bot can
+# start even if the package is missing.  Use the Agg backend for headless
+# operation and build the font cache eagerly to avoid the ``building the
+# font cache'' message showing up in the logs every time the first reminder
+# is sent.
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    from io import BytesIO
+
+    # trigger font cache build immediately (it happens on first figure)
+    try:
+        import matplotlib.font_manager
+        matplotlib.font_manager._rebuild()
+    except Exception:
+        # if rebuilding fails, we'll just let the first plot do it normally
+        pass
+
+    HAS_MATPLOTLIB = True
+except ImportError:
+    # missing optional dependency; disable chart generation
+    HAS_MATPLOTLIB = False
+    plt = None
+    mdates = None
+    BytesIO = None
 
 import requests
 import psycopg2
@@ -18,6 +41,20 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ensure matplotlib has a stable config directory for its font cache. This
+# prevents the “building the font cache” message from reappearing when the
+# process restarts.  If the environment variable is already set by the host
+# we honour it; otherwise we pick a writable folder inside the project and
+# export it so that matplotlib will use it.
+if not os.getenv("MPLCONFIGDIR"):
+    default_mpl = os.path.join(os.getcwd(), ".mplconfig")
+    try:
+        os.makedirs(default_mpl, exist_ok=True)
+        os.environ["MPLCONFIGDIR"] = default_mpl
+    except Exception:
+        # fall back to whatever matplotlib chooses (usually /tmp)
+        pass
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -334,6 +371,10 @@ def get_all_logs(chat_id: int) -> list:
 
 
 def generate_history_chart(chat_id: int, config: dict) -> BytesIO | None:
+    if not HAS_MATPLOTLIB:  # optional dependency
+        logger.warning("history chart requested but matplotlib is not installed")
+        return None
+
     rows = get_all_logs(chat_id)
     if not rows:
         return None
@@ -378,7 +419,12 @@ def generate_history_chart(chat_id: int, config: dict) -> BytesIO | None:
     fig.tight_layout()
 
     buf = BytesIO()
-    fig.savefig(buf, format='png', dpi=110)
+    try:
+        fig.savefig(buf, format='png', dpi=110)
+    except Exception as e:
+        logger.warning("failed to render history chart: %s", e)
+        plt.close(fig)
+        return None
     plt.close(fig)
     buf.seek(0)
     return buf

@@ -75,6 +75,7 @@ cron-job.org ──► GET /cron (every minute) ──► check time, fire messa
 - Python 3.11 + Flask — webhook handler and cron endpoint
 - psycopg2 — PostgreSQL client
 - matplotlib — generates consumption history chart images sent via Telegram
+  (optional; if absent the History command will simply omit the chart)
 - Supabase — free hosted PostgreSQL database
 - Render — free web service hosting (kept alive by cron pings)
 - cron-job.org — free external cron, hits `/cron` every minute
@@ -140,10 +141,18 @@ Send `/start` to your bot on Telegram.
 
 ## Local development
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt   # includes matplotlib for history charts
 cp .env.example .env   # fill in your values
 python boy_cycle.py    # runs on localhost:5000
 ```
+
+> **Note:** the first import of matplotlib builds a font cache and may log
+> ``Matplotlib is building the font cache; this may take a moment``. The
+> bot pre-populates the cache at startup so you should only see it once per
+> deployment; it can safely be ignored.  The code also sets `MPLCONFIGDIR`
+> automatically (to `./.mplconfig` by default) so you don't need to add the
+> variable yourself unless you prefer a different location.
+
 For local testing use polling or expose via [ngrok](https://ngrok.com) to receive webhooks.
 
 ---
