@@ -87,7 +87,7 @@ DEFAULT_NICOTINE_TARGET = 3
 MAIN_KEYBOARD = {
     "keyboard": [
         [{"text": "📊 Status"}, {"text": "📝 Log"}, {"text": "📈 History"}],
-        [{"text": "🔄 Cycle"},  {"text": "⏭ Skip Phase"}, {"text": "🔁 Reset Cycle"}],
+        [{"text": "🔄 Cycle"},  {"text": "⏭ Skip Phase"}, {"text": "🔁 Reset Phase"}],
         [{"text": "⏰ Set Time"}, {"text": "💊 Set Dose"}, {"text": "⏸ Pause"}],
     ],
     "resize_keyboard": True,
@@ -1055,7 +1055,7 @@ def webhook():
         "📈 History":     lambda: handle_history(chat_id),
         "🔄 Cycle":       lambda: handle_cycle(chat_id),
         "⏭ Skip Phase":  lambda: handle_skip(chat_id),
-        "🔁 Reset Cycle": lambda: handle_reset(chat_id),
+        "🔁 Reset Phase": lambda: handle_reset(chat_id),
         "⏰ Set Time":    lambda: handle_set_time(chat_id),
         "💊 Set Dose":    lambda: handle_set_dose(chat_id),
         "⏸ Pause":       lambda: handle_pause(chat_id),

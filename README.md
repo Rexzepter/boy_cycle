@@ -30,7 +30,7 @@ Morning and evening times are configurable per user (see ⏰ Set Time below).
 | 📈 History | Last 14 days of logs + averages, trend, streak; sends a chart image of full consumption history |
 | 🔄 Cycle | Full 7-day schedule with today marked and current targets |
 | ⏭ Skip | Jump to the next phase immediately |
-| 🔁 Reset Cycle | Reset to Day 1 of the current phase |
+| 🔁 Reset Phase | Reset to Day 1 of the current phase |
 | ⏰ Set Time | Set the morning and evening notification times |
 | 💊 Set Dose | Set daily dose targets for coffee and nicotine |
 | ⏸ Pause | Pause all notifications; keyboard shows only ▶️ Resume |
