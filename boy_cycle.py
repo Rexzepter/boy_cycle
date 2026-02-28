@@ -25,15 +25,25 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Conversation states
-ASKING_TIME     = "ASKING_TIME"
-ASKING_MESSAGE  = "ASKING_MESSAGE"
-ASKING_REPEAT   = "ASKING_REPEAT"
+ASKING_TIME      = "ASKING_TIME"
+ASKING_MESSAGE   = "ASKING_MESSAGE"
+ASKING_REPEAT    = "ASKING_REPEAT"
 AWAITING_CHECKIN = "AWAITING_CHECKIN"
 
 # Cycle constants
-COFFEE_TARGET  = 2   # target cups per coffee day
-COFFEE_FLAG    = 4   # flag if >= this for 3 consecutive coffee days
-NICOTINE_FLAG  = 5   # flag if >= this for 3 consecutive nicotine days
+COFFEE_TARGET = 2
+COFFEE_FLAG   = 4
+NICOTINE_FLAG = 5
+
+# Persistent reply keyboard shown at the bottom of the chat
+MAIN_KEYBOARD = {
+    "keyboard": [
+        [{"text": "📊 Status"}, {"text": "📝 Log"}, {"text": "📈 History"}],
+        [{"text": "🔄 Cycle"},  {"text": "⏭ Skip"}, {"text": "🔁 Reset"}],
+    ],
+    "resize_keyboard": True,
+    "persistent": True,
+}
 
 # ---------------------------------------------------------------------------
 # Database
@@ -275,7 +285,6 @@ def parse_days(text: str) -> tuple:
 # ---------------------------------------------------------------------------
 
 def get_cycle_info(cycle_start: date, today: date) -> dict:
-    """Returns cycle_day (1-7), phase, phase_day, days_remaining (including today)."""
     cycle_day = ((today - cycle_start).days % 7) + 1
     if cycle_day <= 4:
         phase = "coffee"
@@ -296,16 +305,16 @@ def get_cycle_info(cycle_start: date, today: date) -> dict:
 def format_morning_message(info: dict) -> str:
     day = info["cycle_day"]
     rem = info["days_remaining"]
-    rem_str = f"{rem} day{'s' if rem != 1 else ''} remaining in this phase"
+    rem_str = f"{rem} day{'s' if rem != 1 else ''} remaining"
     if info["phase"] == "coffee":
         return (
             f"☕ Day {day} — Coffee Phase ({rem_str})\n"
-            f"Target: 2 cups of coffee today. No nicotine.\n"
+            f"📌 Recommended today: 2 cups of coffee. No nicotine.\n"
             f"Check-in tonight at 9 PM."
         )
     return (
-        f"🟢 Day {day} — Nicotine Phase ({rem_str})\n"
-        f"Target: 3–4 pieces of 2mg nicotine gum. No coffee.\n"
+        f"◽ Day {day} — Nicotine Phase ({rem_str})\n"
+        f"📌 Recommended today: 3–4 pieces of 2mg nicotine gum. No coffee.\n"
         f"Check-in tonight at 9 PM."
     )
 
@@ -314,8 +323,7 @@ def format_checkin_prompt(info: dict) -> str:
     substance = "cups" if info["phase"] == "coffee" else "pieces"
     return (
         f"📋 Daily check-in — how did today go?\n"
-        f"Reply with the number of {substance} you had today, "
-        f"or add a note (e.g. '2 felt good')."
+        f"Reply with the number of {substance} you had, or add a note (e.g. '2 felt good')."
     )
 
 
@@ -354,9 +362,8 @@ def format_status(chat_id: int) -> str:
     cycle_start = get_cycle_start(chat_id)
     if not cycle_start:
         return "No cycle started. Send /start to begin."
-
     info = get_cycle_info(cycle_start, today)
-    emoji = "☕" if info["phase"] == "coffee" else "🟢"
+    emoji = "☕" if info["phase"] == "coffee" else "◽"
     phase_name = "Coffee Phase" if info["phase"] == "coffee" else "Nicotine Phase"
     rem = info["days_remaining"]
     lines = [
@@ -402,7 +409,7 @@ def answer_callback(callback_query_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Command handlers
+# Command handlers — cycle
 # ---------------------------------------------------------------------------
 
 def handle_start(chat_id: int) -> None:
@@ -413,40 +420,43 @@ def handle_start(chat_id: int) -> None:
         set_cycle_start(chat_id, today)
         send_message(
             chat_id,
-            "👋 Welcome! Your cycle starts today.\n\n"
-            + format_status(chat_id) + "\n\n"
-            "Commands:\n"
-            "/status — current day & phase\n"
-            "/log [n] — log today's consumption\n"
-            "/history — last 14 days\n"
-            "/cycle — 7-day schedule\n"
-            "/skip — jump to next phase\n"
-            "/add — add a custom timed reminder\n"
-            "/list — view reminders\n"
-            "/delete — remove a reminder",
+            "👋 Welcome! Your cycle starts today.\n\n" + format_status(chat_id),
+            reply_markup=MAIN_KEYBOARD,
         )
     else:
-        send_message(chat_id, "👋 Welcome back!\n\n" + format_status(chat_id))
+        send_message(
+            chat_id,
+            "👋 Welcome back!\n\n" + format_status(chat_id),
+            reply_markup=MAIN_KEYBOARD,
+        )
 
 
 def handle_status(chat_id: int) -> None:
-    send_message(chat_id, format_status(chat_id))
+    send_message(chat_id, format_status(chat_id), reply_markup=MAIN_KEYBOARD)
 
 
 def handle_log_command(chat_id: int, args: str) -> None:
     cycle_start = get_cycle_start(chat_id)
     if not cycle_start:
-        send_message(chat_id, "No cycle started. Use /start first.")
+        send_message(chat_id, "No cycle started. Use /start first.", reply_markup=MAIN_KEYBOARD)
+        return
+    # No args — enter check-in state and ask
+    if not args:
+        today = datetime.now(TZ).date()
+        info = get_cycle_info(cycle_start, today)
+        substance = "cups" if info["phase"] == "coffee" else "pieces"
+        set_conv(chat_id, state=AWAITING_CHECKIN)
+        send_message(chat_id, f"How many {substance} today? (e.g. '2' or '2 felt good')")
         return
     units, note = parse_checkin_reply(args)
     if units is None:
-        send_message(chat_id, "Usage: /log 2  or  /log 2 felt great")
+        send_message(chat_id, "Usage: /log 2  or  /log 2 felt great", reply_markup=MAIN_KEYBOARD)
         return
     today = datetime.now(TZ).date()
     info = get_cycle_info(cycle_start, today)
     log_day(chat_id, today, info["phase"], units, note)
     substance = "cups" if info["phase"] == "coffee" else "pieces"
-    send_message(chat_id, f"✅ Logged: {units} {substance} today.")
+    send_message(chat_id, f"✅ Logged: {units} {substance} today.", reply_markup=MAIN_KEYBOARD)
     warning = check_tolerance(chat_id, info["phase"])
     if warning:
         send_message(chat_id, warning)
@@ -455,33 +465,30 @@ def handle_log_command(chat_id: int, args: str) -> None:
 def handle_history(chat_id: int) -> None:
     rows = get_recent_logs(chat_id, 14)
     if not rows:
-        send_message(chat_id, "No history yet.")
+        send_message(chat_id, "No history yet.", reply_markup=MAIN_KEYBOARD)
         return
 
     lines = ["📊 Last 14 days:\n"]
     for log_date, phase, units, note in rows:
-        emoji = "☕" if phase == "coffee" else "🟢"
+        emoji = "☕" if phase == "coffee" else "◽"
         units_str = str(units) if units is not None else "—"
         note_str = f"  ({note})" if note else ""
         lines.append(f"{emoji} {log_date}  {units_str}{note_str}")
 
-    # Averages and trend
-    coffee_units = [r[2] for r in rows if r[1] == "coffee" and r[2] is not None]
+    coffee_units = [r[2] for r in rows if r[1] == "coffee"   and r[2] is not None]
     nic_units    = [r[2] for r in rows if r[1] == "nicotine" and r[2] is not None]
 
     stats = []
-    for label, emoji, data in [("coffee", "☕", coffee_units), ("nicotine", "🟢", nic_units)]:
+    for label, emoji, data in [("coffee", "☕", coffee_units), ("nicotine", "◽", nic_units)]:
         if not data:
             continue
         avg = sum(data) / len(data)
         trend = ""
-        if len(data) >= 6:
-            if sum(data[:3]) / 3 > sum(data[3:6]) / 3 + 0.5:
-                trend = " ↑ trending up"
+        if len(data) >= 6 and sum(data[:3]) / 3 > sum(data[3:6]) / 3 + 0.5:
+            trend = " ↑ trending up"
         unit = "cups" if label == "coffee" else "pieces"
         stats.append(f"{emoji} Avg {label}: {avg:.1f} {unit}{trend}")
 
-    # Longest on-target streak
     all_logged = [(r[1], r[2]) for r in rows if r[2] is not None]
     streak = best = 0
     for phase, units in reversed(all_logged):
@@ -496,76 +503,78 @@ def handle_history(chat_id: int) -> None:
 
     if stats:
         lines.append("\n" + "\n".join(stats))
-    send_message(chat_id, "\n".join(lines))
+    send_message(chat_id, "\n".join(lines), reply_markup=MAIN_KEYBOARD)
 
 
 def handle_cycle(chat_id: int) -> None:
     cycle_start = get_cycle_start(chat_id)
     if not cycle_start:
-        send_message(chat_id, "No cycle started. Use /start first.")
+        send_message(chat_id, "No cycle started. Use /start first.", reply_markup=MAIN_KEYBOARD)
         return
     today = datetime.now(TZ).date()
     current_day = get_cycle_info(cycle_start, today)["cycle_day"]
     lines = ["📅 7-day cycle:\n"]
     for d in range(1, 8):
-        label = "☕ Coffee (target: 2 cups)" if d <= 4 else "🟢 Nicotine (target: 3–4 pieces)"
+        label = "☕ Coffee (target: 2 cups)" if d <= 4 else "◽ Nicotine (target: 3–4 pieces)"
         marker = " ← today" if d == current_day else ""
         lines.append(f"Day {d}: {label}{marker}")
-    send_message(chat_id, "\n".join(lines))
+    send_message(chat_id, "\n".join(lines), reply_markup=MAIN_KEYBOARD)
 
 
 def handle_skip(chat_id: int) -> None:
     cycle_start = get_cycle_start(chat_id)
     if not cycle_start:
-        send_message(chat_id, "No cycle started. Use /start first.")
+        send_message(chat_id, "No cycle started. Use /start first.", reply_markup=MAIN_KEYBOARD)
         return
     today = datetime.now(TZ).date()
     info = get_cycle_info(cycle_start, today)
     if info["phase"] == "coffee":
-        new_start = today - timedelta(days=4)   # make today = day 5 (nicotine)
+        new_start = today - timedelta(days=4)
         jumped_to = "Nicotine Phase"
     else:
-        new_start = today                        # make today = day 1 (new coffee cycle)
+        new_start = today
         jumped_to = "Coffee Phase (new cycle)"
     set_cycle_start(chat_id, new_start)
-    send_message(chat_id, f"⏭ Skipped to {jumped_to}.\n\n{format_status(chat_id)}")
+    send_message(chat_id, f"⏭ Skipped to {jumped_to}.\n\n{format_status(chat_id)}", reply_markup=MAIN_KEYBOARD)
+
+
+def handle_reset(chat_id: int) -> None:
+    cycle_start = get_cycle_start(chat_id)
+    if not cycle_start:
+        send_message(chat_id, "No cycle started. Use /start first.", reply_markup=MAIN_KEYBOARD)
+        return
+    today = datetime.now(TZ).date()
+    info = get_cycle_info(cycle_start, today)
+    if info["phase"] == "coffee":
+        new_start = today                    # today = day 1 of coffee
+    else:
+        new_start = today - timedelta(days=4)  # today = day 5 = day 1 of nicotine
+    set_cycle_start(chat_id, new_start)
+    phase_name = "Coffee Phase" if info["phase"] == "coffee" else "Nicotine Phase"
+    send_message(chat_id, f"🔁 Reset to Day 1 of {phase_name}.\n\n{format_status(chat_id)}", reply_markup=MAIN_KEYBOARD)
 
 
 # --- Generic reminder handlers ---
 
 def handle_add(chat_id: int) -> None:
     set_conv(chat_id, state=ASKING_TIME)
-    send_message(chat_id, "Let's add a reminder!\n\nWhat time? (24h format, e.g. 09:30)")
+    send_message(chat_id, "➕ Let's add a reminder!\n\nWhat time? (24h format, e.g. 09:30)")
 
 
 def handle_list(chat_id: int) -> None:
     rows = get_reminders(chat_id)
     if not rows:
-        send_message(chat_id, "You have no reminders. Use /add to create one.")
+        send_message(chat_id, "You have no reminders. Tap ➕ Add reminder to create one.", reply_markup=MAIN_KEYBOARD)
         return
-    lines = ["Your reminders:\n"]
+    lines = ["📋 Your reminders:\n"]
     for rid, t, msg, days in rows:
         lines.append(f"#{rid}  {t}  [{days}]\n    {msg}")
-    send_message(chat_id, "\n\n".join(lines))
-
-
-def handle_delete(chat_id: int) -> None:
-    rows = get_reminders(chat_id)
-    if not rows:
-        send_message(chat_id, "You have no reminders to delete.")
-        return
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": f"#{rid}  {t}  {msg[:30]}", "callback_data": f"del_{rid}"}]
-            for rid, t, msg, _ in rows
-        ] + [[{"text": "Cancel", "callback_data": "del_cancel"}]]
-    }
-    send_message(chat_id, "Which reminder do you want to delete?", reply_markup=keyboard)
+    send_message(chat_id, "\n\n".join(lines), reply_markup=MAIN_KEYBOARD)
 
 
 def handle_cancel(chat_id: int) -> None:
     set_conv(chat_id)
-    send_message(chat_id, "Cancelled.")
+    send_message(chat_id, "Cancelled.", reply_markup=MAIN_KEYBOARD)
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +612,8 @@ def handle_text(chat_id: int, text: str) -> None:
         set_conv(chat_id)
         send_message(
             chat_id,
-            f"Reminder set!\n\nTime: {conv['temp_time']}\nMessage: {conv['temp_message']}\nRepeat: {normalized}",
+            f"✅ Reminder set!\n\nTime: {conv['temp_time']}\nMessage: {conv['temp_message']}\nRepeat: {normalized}",
+            reply_markup=MAIN_KEYBOARD,
         )
 
     elif state == AWAITING_CHECKIN:
@@ -620,13 +630,13 @@ def handle_text(chat_id: int, text: str) -> None:
         log_day(chat_id, today, info["phase"], units, note)
         set_conv(chat_id)
         substance = "cups" if info["phase"] == "coffee" else "pieces"
-        send_message(chat_id, f"✅ Logged: {units} {substance} today. Good work!")
+        send_message(chat_id, f"✅ Logged: {units} {substance} today. Good work!", reply_markup=MAIN_KEYBOARD)
         warning = check_tolerance(chat_id, info["phase"])
         if warning:
             send_message(chat_id, warning)
 
     else:
-        send_message(chat_id, "Use /status to see your current day, or /log [n] to log today.")
+        send_message(chat_id, "Tap a button below or use /status to see your current day.", reply_markup=MAIN_KEYBOARD)
 
 
 def handle_callback(callback_query_id: str, chat_id: int, message_id: int, data: str) -> None:
@@ -671,7 +681,19 @@ def webhook():
         send_message(chat_id, "This is a private bot.")
         return jsonify({"ok": True})
 
-    if text.startswith("/start"):
+    # Reply keyboard button map
+    button_map = {
+        "📊 Status":       lambda: handle_status(chat_id),
+        "📝 Log":          lambda: handle_log_command(chat_id, ""),
+        "📈 History":      lambda: handle_history(chat_id),
+        "🔄 Cycle":        lambda: handle_cycle(chat_id),
+        "⏭ Skip":         lambda: handle_skip(chat_id),
+        "🔁 Reset":        lambda: handle_reset(chat_id),
+    }
+
+    if text in button_map:
+        button_map[text]()
+    elif text.startswith("/start"):
         handle_start(chat_id)
     elif text.startswith("/status"):
         handle_status(chat_id)
@@ -683,12 +705,8 @@ def webhook():
         handle_cycle(chat_id)
     elif text.startswith("/skip"):
         handle_skip(chat_id)
-    elif text.startswith("/add"):
-        handle_add(chat_id)
-    elif text.startswith("/list"):
-        handle_list(chat_id)
-    elif text.startswith("/delete"):
-        handle_delete(chat_id)
+    elif text.startswith("/reset"):
+        handle_reset(chat_id)
     elif text.startswith("/cancel"):
         handle_cancel(chat_id)
     else:
